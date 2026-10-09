@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 class ReleaseTests(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(VERSION, '0.1.0-alpha.1')
+        self.assertEqual(VERSION, '0.4.1')
     def test_docker_rejects_invalid_ids(self):
         data={'context':'default','age_days':7,'include_unused':False,'candidates':[]}
         with patch('niruflow.modules.docker_cleanup._run', return_value='default'), patch('niruflow.modules.docker_cleanup.preview', return_value={'candidates':[]}):

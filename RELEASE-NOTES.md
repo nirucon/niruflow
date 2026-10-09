@@ -1,10 +1,5 @@
-# NIRUFLOW 0.1.0-alpha.1
+# NIRUFLOW 0.4.1
 
-Initial public alpha based on the current working application.
+English-only application interface. Regional date and time preferences are independent of the UI language: Sweden (default), UK and US; ISO, day-first and month-first dates; 24-hour and 12-hour clocks; optional regional weekday abbreviations. Existing configuration, history and quarantine remain untouched.
 
-- Fixed installation failure caused by compiling PySide6's non-Python template files.
-- Versioned installation with an activated `current` link and stable launcher.
-- Preserves earlier environments, configuration and automation history.
-- Unified version labels and simplified public documentation.
-
-This is an alpha release, not a production-stability guarantee. Destructive filesystem and Docker operations require manual review.
+Includes fixes for mixed-language labels in Settings, History and location management, plus a live formatting example. This is an alpha-stage release and requires real-world GUI testing on Omarchy/Hyprland.

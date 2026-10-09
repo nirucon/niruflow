@@ -2,17 +2,19 @@
 import json
 import sys
 from datetime import datetime
-from .localization import tr, apply_locale, format_date
+from .localization import tr, apply_locale, format_datetime, REGIONS, DATE_PATTERNS, TIME_PATTERNS
 from pathlib import Path
 
 from ..core.config import load, save
 from ..core.backup import export_config, import_config
 from ..core.scheduler import status as scheduler_status, install as scheduler_install, set_enabled as scheduler_set_enabled
+from ..core.planning import preview_rules
 from ..core.locations import locations, location_paths, add_location, profile
 from ..core.store import history
 from ..core.safety import is_nextcloud
 from ..modules.cleanup import scan, quarantine, restore
 from ..modules.projects import analyze
+from ..modules.insights import project_insights
 from ..modules.docker import inspect, container_action, container_remove, logs, mounts
 from ..modules.forgotten import find_old_files
 from ..modules.compose import discover
@@ -20,10 +22,11 @@ from ..modules.storage import largest, duplicates, storage_quarantine, storage_d
 from ..modules.docker_cleanup import preview as image_cleanup_preview, apply as image_cleanup_apply
 from ..core.formatting import human_size
 from .themes import THEMES, stylesheet
+from .widgets import make_table, populate_table
 
 
 def launch():
-    from PySide6.QtCore import Qt, QObject, QThread, Signal
+    from PySide6.QtCore import Qt, QObject, QThread, Signal, QTimer
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
         QHBoxLayout, QLabel, QPushButton, QComboBox, QStackedWidget, QTableWidget,
         QTableWidgetItem, QCheckBox, QSpinBox, QMessageBox as QtMessageBox, QPlainTextEdit,
@@ -59,12 +62,21 @@ def launch():
     class Worker(QObject):
         finished = Signal(object)
         failed = Signal(str)
-        def __init__(self, task):
+        progress = Signal(object)
+        cancelled = Signal()
+        def __init__(self, task, cancellable=False):
             super().__init__()
             self.task = task
+            self.cancellable = cancellable
+            import threading
+            self.cancel_event = threading.Event()
         def run(self):
             try:
-                self.finished.emit(self.task())
+                result = self.task(self.cancel_event.is_set, self.progress.emit) if self.cancellable else self.task()
+                if self.cancellable and self.cancel_event.is_set():
+                    self.cancelled.emit()
+                else:
+                    self.finished.emit(result)
             except Exception as exc:
                 self.failed.emit(str(exc))
 
@@ -80,37 +92,20 @@ def launch():
         return b
 
     def table(headers):
-        t=QTableWidget(0,len(headers))
-        t.setHorizontalHeaderLabels(headers)
-        t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        t.horizontalHeader().setStretchLastSection(True)
-        t.setSelectionBehavior(QAbstractItemView.SelectRows)
-        t.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        t.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        t.setAlternatingRowColors(True)
-        t.setSortingEnabled(True)
-        t.verticalHeader().hide()
-        return t
+        return make_table(headers)
 
     def fill(t, rows, enable_sort=True):
-        t.setSortingEnabled(False)
-        t.setRowCount(len(rows))
-        for i, row in enumerate(rows):
-            for j, value in enumerate(row):
-                item=QTableWidgetItem(str(value))
-                if isinstance(value,(int,float)):
-                    item.setData(Qt.EditRole,value)
-                t.setItem(i,j,item)
-        t.setSortingEnabled(enable_sort)
+        populate_table(t, rows, enable_sort)
 
     class Window(QMainWindow):
         def __init__(self):
             super().__init__()
             self.cfg=load()
             self.jobs=[]
+            self.storage_job=None
             self.candidates=[]
             self.image_cleanup_plan=None
-            self.setWindowTitle('NIRUFLOW 0.1.0-alpha.1')
+            self.setWindowTitle('NIRUFLOW 0.4.1')
             self.resize(1180,760)
             host=QWidget()
             layout=QVBoxLayout(host)
@@ -155,7 +150,7 @@ def launch():
                 self.pages[name]=page_layout
                 self.stack.addWidget(page)
             side.addStretch()
-            side.addWidget(label('0.1.0-alpha.1  ·  Nicklas Rudolfsson',True))
+            side.addWidget(label('0.4.1  ·  Ing Leif Nicklas Rudolfsson',True))
             splitter.addWidget(self.sidebar)
             splitter.addWidget(self.stack)
             splitter.setSizes([192,980])
@@ -177,7 +172,7 @@ def launch():
             self.navigate(0)
         def closeEvent(self,event):
             if any(thread.isRunning() for thread in self.jobs):
-                QMessageBox.information(self,'Analys pågår','Vänta tills pågående analys har avslutats innan fönstret stängs.')
+                QMessageBox.information(self,'Analysis in progress','Wait until the current analysis finishes before closing the window.')
                 event.ignore()
                 return
             event.accept()
@@ -193,24 +188,34 @@ def launch():
             if index==1:self.refresh_automations()
             if index==7:self.refresh_history()
             if index==4 and not getattr(self,'docker_data',None):self.refresh_docker()
-        def run_task(self,task,on_success):
+        def run_task(self,task,on_success, *, cancellable=False, progress=None, on_end=None):
             # Thread ownership retained until quit/finished, no blocking UI work.
             thread=QThread(self)
-            worker=Worker(task)
+            worker=Worker(task,cancellable)
+            if cancellable:
+                self.storage_job=worker
             worker.moveToThread(thread)
             thread.started.connect(worker.run)
             worker.finished.connect(on_success)
-            worker.failed.connect(lambda message:(self.statusBar().showMessage('Fel: '+message),QMessageBox.warning(self,'Analysen misslyckades',message)))
+            if progress is not None:
+                worker.progress.connect(progress)
+            worker.failed.connect(lambda message:(self.statusBar().showMessage('Error: '+message),QMessageBox.warning(self,'Analysis failed',message)))
             worker.finished.connect(lambda _result:self.statusBar().showMessage('Analysis complete'))
             worker.finished.connect(thread.quit)
             worker.failed.connect(thread.quit)
+            worker.cancelled.connect(thread.quit)
+            worker.cancelled.connect(lambda:self.statusBar().showMessage('Scan cancelled · no files changed'))
+            if cancellable:
+                worker.cancelled.connect(lambda:self.storage_info.setText('Scan cancelled · no files changed'))
+            if on_end is not None:
+                thread.finished.connect(on_end)
             thread.finished.connect(worker.deleteLater)
             thread.finished.connect(thread.deleteLater)
             thread._niruflow_worker=worker
             self.jobs.append(thread)
             thread.finished.connect(lambda:self.jobs.remove(thread) if thread in self.jobs else None)
             thread.start()
-            self.statusBar().showMessage('Analys pågår i bakgrunden …')
+            self.statusBar().showMessage('Analysis running in the background…')
         def build_overview(self):
             v=self.pages['Overview']
             v.addWidget(label('Local maintenance and automation · No cloud service required',True))
@@ -237,7 +242,7 @@ def launch():
                 self.overview_disk.setText(f'Home filesystem    ·    Free: {human_size(disk.free)}    ·    Used: {human_size(disk.used)}    ·    Capacity: {human_size(disk.total)}')
             except OSError:
                 self.overview_disk.setText('Filesystem usage unavailable')
-            fill(self.overview_history,[(x[1][:19].replace('T',' '),x[2],x[5],Path(x[3]).name) for x in rows])
+            fill(self.overview_history,[(self.display_datetime(x[1]),x[2],x[5],Path(x[3]).name) for x in rows])
             self.overview_empty.setText('No recent actions. Run a preview in File Cleanup, Storage or Docker to get started.' if not rows else '')
         def build_automations(self):
             v=self.pages['Automations']
@@ -346,9 +351,9 @@ def launch():
             self.set_age_selection(self.age,int(r.get('hours',24)))
             self.cleanup_table.setRowCount(0)
             self.candidates=[]
-            self.cleanup_info.setText('Katalog: '+r['path']+'  ·  Kör analys för att visa kandidater')
+            self.cleanup_info.setText('Directory: '+r['path']+'  ·  Run a scan to show candidates')
         def choose_rule_path(self):
-            directory=QFileDialog.getExistingDirectory(self,'Välj städkatalog',str(Path(self.rule()['path']).expanduser()))
+            directory=QFileDialog.getExistingDirectory(self,'Choose cleanup directory',str(Path(self.rule()['path']).expanduser()))
             if directory:
                 self.rule()['path']=directory
                 save(self.cfg)
@@ -358,57 +363,61 @@ def launch():
             r['enabled']=self.enabled.isChecked()
             r['hours']=self.age.currentData()
             save(self.cfg)
-            self.statusBar().showMessage('Regel sparad')
+            self.statusBar().showMessage('Rule saved')
         def preview(self):
             r=dict(self.rule())
             r['hours']=self.age.currentData()
             self.run_task(lambda:scan(r),self.preview_done)
         def preview_done(self,results):
             self.candidates=results
-            fill(self.cleanup_table,[(Path(x['path']).name,human_size(x['bytes']),datetime.fromtimestamp(x['mtime']).strftime('%Y-%m-%d %H:%M'),x['path']) for x in results])
+            fill(self.cleanup_table,[(Path(x['path']).name,human_size(x['bytes']),self.display_datetime(datetime.fromtimestamp(x['mtime'])),x['path']) for x in results])
             total=sum(x['bytes'] for x in results)
-            self.cleanup_info.setText(f'{len(results)} kandidater · {total/1048576:.1f} MiB · endast förhandsgranskning')
-            self.statusBar().showMessage('Analys klar, inga filer ändrade')
+            self.cleanup_info.setText(f'{len(results)} candidates · {total/1048576:.1f} MiB · preview only')
+            self.statusBar().showMessage('Analysis complete; no files changed')
         def apply_cleanup(self):
             if not self.rule().get('enabled'):
-                QMessageBox.information(self,'Regeln är avstängd','Aktivera och spara regeln först.')
+                QMessageBox.information(self,'Rule is disabled','Enable and save the rule first.')
                 return
             chosen={item.row() for item in self.cleanup_table.selectedItems()}
             paths={self.cleanup_table.item(row,3).text() for row in chosen}
             candidates=[x for x in self.candidates if x['path'] in paths]
             if not candidates:
-                QMessageBox.information(self,'Inget markerat','Markera filer i tabellen först.')
+                QMessageBox.information(self,'Nothing selected','Select files in the table first.')
                 return
             synced=is_nextcloud(self.rule()['path'])
-            msg=f'Flytta {len(candidates)} markerade filer till lokal karantän?'
+            msg=f'Move {len(candidates)} selected files to local quarantine?'
             if synced:msg+='\n\nVARNING: Nextcloud synkroniserar bortflyttningen som radering till andra enheter.'
-            if QMessageBox.question(self,'Bekräfta åtgärd',msg)!=QMessageBox.Yes:return
+            if QMessageBox.question(self,'Confirm action',msg)!=QMessageBox.Yes:return
             try:
                 moved=quarantine(self.rule(),candidates,allow_synced=synced)
-                self.statusBar().showMessage(f'{len(moved)} filer flyttade till karantän')
+                self.statusBar().showMessage(f'{len(moved)} files moved to quarantine')
                 self.preview()
             except Exception as exc:
-                QMessageBox.warning(self,'Åtgärden misslyckades',str(exc))
+                QMessageBox.warning(self,'Action failed',str(exc))
         def build_projects(self):
             v=self.pages['Projects']
             v.addWidget(label('Read-only inventory. Patch chains and unknown artifacts are protected.',True))
             row=QHBoxLayout()
             row.addWidget(button('Analyze project directories',self.refresh_projects))
             self.project_filter=QLineEdit()
-            self.project_filter.setPlaceholderText('Filtrera projekt eller filnamn …')
+            self.project_filter.setPlaceholderText('Filter projects or filenames…')
             self.project_filter.textChanged.connect(self.filter_projects)
             row.addWidget(self.project_filter)
             v.addLayout(row)
-            self.projects_table=table(['Projekt','Artefakt','Typ','Version','Från → Till','Bedömning'])
+            self.projects_table=table(['Project','Artifact','Type','Version','From → To','Assessment'])
             v.addWidget(self.projects_table)
-            v.addWidget(label('”Granska” betyder inte att filen är säker att radera. Ingen projektgallring utförs.',True))
+            v.addWidget(label('“Review” does not mean safe to delete. Project inventory is read-only.',True))
             self.project_rows=[]
+            self.projects_status=label('No project scan yet. Analysis is read-only.',True)
+            v.addWidget(self.projects_status)
         def refresh_projects(self):
             paths=location_paths(self.cfg,'projects')
             self.run_task(lambda:[entry for path in paths for entry in analyze(path)],self.projects_done)
         def projects_done(self,rows):
             self.project_rows=rows
             self.filter_projects()
+            insight=project_insights(rows)
+            self.projects_status.setText(f"{insight['total']} artifacts · {insight['protected']} protected · {insight['review']} to review · read-only" if rows else 'No project artifacts found in configured directories.')
             self.statusBar().showMessage(f'{len(rows)} project artifacts inventoried')
         def filter_projects(self):
             query=self.project_filter.text().casefold()
@@ -559,13 +568,13 @@ def launch():
         def docker_done(self,data):
             self.docker_data=data
             summary=data['summary']
-            self.docker_summary.setText(f"Context: {data.get('context','?')} · {summary['containers']} containrar · {summary['running']} körs · {summary['unhealthy']} unhealthy · {summary['images']} images")
+            self.docker_summary.setText(f"Context: {data.get('context','?')} · {summary['containers']} containers · {summary['running']} running · {summary['unhealthy']} unhealthy · {summary['images']} images")
             fill(self.docker_containers,[(x.get('Names',''),x.get('Image',''),x.get('Status',''),
                 'Unhealthy' if 'unhealthy' in x.get('Status','').lower() else '',x.get('Size','')) for x in data['containers']])
             fill(self.docker_images,[(x.get('Repository',''),x.get('Tag',''),x.get('ID',''),x.get('Size','')) for x in data['images']])
             self.docker_disk.setPlainText(data['disk'])
             self.filter_containers();self.filter_images()
-            self.statusBar().showMessage('Docker-status uppdaterad · inga ändringar utförda')
+            self.statusBar().showMessage('Docker status updated · no changes made')
         def selected_container(self):
             rows=self.docker_containers.selectedItems()
             if not rows:return None
@@ -575,14 +584,14 @@ def launch():
         def docker_action_ui(self,action):
             entry=self.selected_container()
             if not entry:
-                QMessageBox.information(self,'Välj container','Markera en container först.')
+                QMessageBox.information(self,'Select container','Select a container first.')
                 return
             ident=entry.get('ID','')
             if not ident:
-                QMessageBox.warning(self,'ID saknas','Kan inte utföra åtgärden utan container-ID.')
+                QMessageBox.warning(self,'Missing ID','Cannot perform the action without a container ID.')
                 return
-            if QMessageBox.question(self,'Bekräfta Docker-åtgärd',
-                    f"{action.upper()} på {entry.get('Names')}?\n\nContainer-ID: {ident[:16]}\nÅtgärden kan påverka tjänstens tillgänglighet.")!=QMessageBox.Yes:return
+            if QMessageBox.question(self,'Confirm Docker action',
+                    f"{action.upper()} on {entry.get('Names')}?\n\nContainer-ID: {ident[:16]}\nThis action may affect service availability.")!=QMessageBox.Yes:return
             self.run_task(lambda:container_action(ident,action),lambda _result:self.refresh_docker())
         def docker_remove_ui(self):
             entry=self.selected_container()
@@ -646,6 +655,9 @@ def launch():
             filters.addWidget(self.storage_sort)
             v.addLayout(filters)
             self.storage_info=label('Run a scan to see results. No files are changed.',True)
+            self.storage_cancel=button('Cancel scan',self.cancel_storage_scan)
+            self.storage_cancel.setEnabled(False)
+            v.addWidget(self.storage_cancel)
             v.addWidget(self.storage_info)
             self.storage_table=table(['File','Size','Modified','Type','Directory'])
             self.storage_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -698,7 +710,7 @@ def launch():
             # Populate without Qt's lexical re-sort of human-readable sizes.
             self.storage_table.setSortingEnabled(False)
             fill(self.storage_table,[(Path(x['path']).name,human_size(x['bytes']),
-                 datetime.fromtimestamp(x['mtime']).strftime('%Y-%m-%d %H:%M'),x['category'],str(Path(x['path']).parent)) for x in rows], enable_sort=False)
+                 self.display_datetime(datetime.fromtimestamp(x['mtime'])),x['category'],str(Path(x['path']).parent)) for x in rows], enable_sort=False)
             self.storage_info.setText(f'Showing {len(rows)} of {len(self.storage_rows)} scanned files · {human_size(sum(x["bytes"] for x in rows))} displayed total · {self.storage_mode} · no changes')
         def storage_move_selected(self):
             rows=self.storage_selected()
@@ -742,7 +754,30 @@ def launch():
             self.storage_rows=[x for x in self.storage_rows if x['path'] not in moved]
             self.filter_storage()
             QMessageBox.information(self,'Quarantine',f'{len(moved)} files moved to quarantine.\n{len(result["skipped"])} skipped.\nRestore via History.')
+        def cancel_storage_scan(self):
+            if self.storage_job is not None:
+                self.storage_job.cancel_event.set()
+                self.storage_info.setText('Cancelling scan safely…')
+                self.storage_cancel.setEnabled(False)
+
+        def storage_scan_progress(self,details):
+            count,folder=details
+            self.storage_info.setText(f'Scanning · {count:,} files examined · {folder} · no changes')
+
+        def storage_scan_finished(self):
+            self.storage_job=None
+            self.storage_cancel.setEnabled(False)
+
+        def start_storage_scan(self,task,done):
+            if self.storage_job is not None:
+                self.storage_info.setText('A scan is already running. Cancel it before starting another.')
+                return
+            self.storage_info.setText('Starting scan… no files are changed')
+            self.storage_cancel.setEnabled(True)
+            self.run_task(task,done,cancellable=True,progress=self.storage_scan_progress,on_end=self.storage_scan_finished)
+
         def refresh_storage(self):
+            if self.storage_job is not None:return
             index=self.storage_scope.currentIndex()
             if index==0:root=Path.home()
             elif index==1:root=Path.home()/'Nextcloud'
@@ -751,13 +786,13 @@ def launch():
                 if not directory:return
                 root=Path(directory)
             months=self.storage_months.currentData()
-            self.run_task(lambda:find_old_files(root,months=months,limit=300),lambda rows:self.storage_done(rows,'old files'))
+            self.start_storage_scan(lambda cancelled,progress:find_old_files(root,months=months,limit=300,cancelled=cancelled,progress=progress),lambda rows:self.storage_done(rows,'old files'))
         def refresh_largest(self):
             roots=location_paths(self.cfg,'storage')
-            self.run_task(lambda:largest(roots,limit=500),lambda rows:self.storage_done(rows,'largest files'))
+            self.start_storage_scan(lambda cancelled,progress:largest(roots,limit=500,cancelled=cancelled,progress=progress),lambda rows:self.storage_done(rows,'largest files'))
         def refresh_duplicates(self):
             roots=location_paths(self.cfg,'storage')
-            self.run_task(lambda:duplicates(roots,limit=50),self.duplicates_done)
+            self.start_storage_scan(lambda cancelled,progress:duplicates(roots,limit=50,cancelled=cancelled,progress=progress),self.duplicates_done)
         def duplicates_done(self,groups):
             # Display each copy independently. No automatic deduplication.
             rows=[]
@@ -808,8 +843,8 @@ def launch():
             self.media_summary.setText(f"{data['total']} files · {human_size(data['bytes'])} · {data['errors']} inaccessible directories/files · {data['duration_s']} s")
         def build_history(self):
             v=self.pages['History']
-            v.addWidget(label('Karantänåtgärder kan återställas så länge originalplatsen är ledig.',True))
-            self.history_table=table(['ID','Tid','Regel','Original','Status','Size'])
+            v.addWidget(label('Quarantined files can be restored if the original path is available.',True))
+            self.history_table=table(['ID','Time','Rule','Original','Status','Size'])
             v.addWidget(self.history_table)
             row=QHBoxLayout()
             row.addWidget(button('Refresh',self.refresh_history))
@@ -817,41 +852,53 @@ def launch():
             v.addLayout(row)
         def refresh_history(self):
             self.history_rows=history(300)
-            fill(self.history_table,[(x[0],x[1][:19].replace('T',' '),x[2],x[3],x[5],x[6]) for x in self.history_rows])
+            fill(self.history_table,[(x[0],self.display_datetime(x[1]),x[2],x[3],x[5],x[6]) for x in self.history_rows])
         def restore_selected(self):
             selected=self.history_table.selectedItems()
             if not selected:return
             action_id=int(self.history_table.item(selected[0].row(),0).text())
             action=next((x for x in self.history_rows if x[0]==action_id),None)
             if not action or action[5]!='quarantined':
-                QMessageBox.information(self,'Ej återställbar','Välj en karantänåtgärd.')
+                QMessageBox.information(self,'Cannot restore','Select a quarantine entry.')
                 return
-            if QMessageBox.question(self,'Återställ',f'Återställ {action[3]}?')!=QMessageBox.Yes:return
+            if QMessageBox.question(self,'Restore',f'Restore {action[3]}?')!=QMessageBox.Yes:return
             try:
                 restore(action_id)
                 self.refresh_history()
-                self.statusBar().showMessage('Filen återställd')
+                self.statusBar().showMessage('File restored')
             except Exception as exc:
-                QMessageBox.warning(self,'Återställning misslyckades',str(exc))
+                QMessageBox.warning(self,'Restore failed',str(exc))
         def build_settings(self):
             v=self.pages['Settings']
-            v.addWidget(label('NIRUFLOW 0.1.0-alpha.1 · Nicklas Rudolfsson · MIT'))
+            v.addWidget(label('NIRUFLOW 0.4.1 · Ing Leif Nicklas Rudolfsson · MIT'))
             v.addWidget(label('Interface language: English · Regional formatting'))
             locale_row=QHBoxLayout()
-            self.locale_box=QComboBox();self.locale_box.addItems(['sv_SE','en_GB','en_US'])
+            self.locale_box=QComboBox();self.locale_box.addItems(REGIONS)
             self.locale_box.setCurrentText(self.cfg.get('locale','sv_SE'))
             self.locale_box.currentTextChanged.connect(self.change_locale)
-            locale_row.addWidget(label('Locale'));locale_row.addWidget(self.locale_box)
-            self.date_box=QComboBox();self.date_box.addItems(['yyyy-MM-dd','dd/MM/yyyy','MM/dd/yyyy'])
+            locale_row.addWidget(label('Regional format'));locale_row.addWidget(self.locale_box)
+            self.date_box=QComboBox();self.date_box.addItems(DATE_PATTERNS)
             self.date_box.setCurrentText(self.cfg.get('date_format','yyyy-MM-dd'))
             self.date_box.currentTextChanged.connect(self.change_date_format)
             locale_row.addWidget(label('Date format'));locale_row.addWidget(self.date_box)
+            self.time_box=QComboBox();self.time_box.addItems(TIME_PATTERNS)
+            self.time_box.setCurrentText(self.cfg.get('time_format','HH:mm'))
+            self.time_box.currentTextChanged.connect(self.change_time_format)
+            locale_row.addWidget(label('Time format'));locale_row.addWidget(self.time_box)
             v.addLayout(locale_row)
+            self.weekday_box=QCheckBox('Show weekday (e.g. mån, tis, ons for Sweden)')
+            self.weekday_box.setChecked(self.cfg.get('show_weekday',True))
+            self.weekday_box.toggled.connect(self.change_weekday)
+            v.addWidget(self.weekday_box)
+            self.date_example=label('',True)
+            v.addWidget(self.date_example)
+            self.update_date_example()
             v.addWidget(label('Change theme in the upper-right corner.',True))
             v.addWidget(label('Configuration: ~/.config/niruflow/config.json',True))
             v.addWidget(label('History and quarantine: ~/.local/state/niruflow/',True))
             v.addWidget(label('Scheduler: optional systemd user timer.',True))
             v.addWidget(label('Unattended Nextcloud cleanup is blocked.',True))
+            v.addWidget(button('Preview automation safety',self.preview_automation_safety))
             v.addWidget(label('Background scheduling · independent of desktop window'))
             self.scheduler_info=label('',True)
             v.addWidget(self.scheduler_info)
@@ -878,7 +925,7 @@ def launch():
             profile_row.addWidget(button('New profile',self.new_profile_ui))
             v.addLayout(profile_row)
             v.addWidget(label('Monitored locations · profile-specific directories'))
-            self.locations_table=table(['Name','Typ','Directory','Aktiv'])
+            self.locations_table=table(['Name','Type','Directory','Enabled'])
             v.addWidget(self.locations_table)
             actions=QHBoxLayout()
             actions.addWidget(button('Add location',self.add_location_ui))
@@ -887,25 +934,49 @@ def launch():
             actions.addWidget(button('Remove selected',self.remove_location_ui))
             v.addLayout(actions)
             self.refresh_locations()
+        def preview_automation_safety(self):
+            rows=preview_rules(self.cfg)
+            lines=[f"{r['name']}: {r['status']} — {r['path']}" for r in rows]
+            QMessageBox.information(self,'Automation safety preview',
+                '\n'.join(lines) if lines else 'No automation rules configured.')
+
+        def display_datetime(self,value):
+            return format_datetime(value, self.cfg.get('locale','sv_SE'),
+                self.cfg.get('date_format','yyyy-MM-dd'),
+                self.cfg.get('time_format','HH:mm'), self.cfg.get('show_weekday',True))
+        def update_date_example(self):
+            self.date_example.setText('Example: ' + self.display_datetime(datetime(2026,10,9,22,0)))
         def change_locale(self,value):
             self.cfg['locale']=value;save(self.cfg);apply_locale(QApplication.instance(),value)
+            self.update_date_example();self.refresh_displayed_dates()
         def change_date_format(self,value):
             self.cfg['date_format']=value;save(self.cfg)
+            self.update_date_example();self.refresh_displayed_dates()
+        def change_time_format(self,value):
+            self.cfg['time_format']=value;save(self.cfg)
+            self.update_date_example();self.refresh_displayed_dates()
+        def change_weekday(self,value):
+            self.cfg['show_weekday']=value;save(self.cfg)
+            self.update_date_example();self.refresh_displayed_dates()
+        def refresh_displayed_dates(self):
+            if hasattr(self,'history_table'): self.refresh_history()
+            if hasattr(self,'storage_table') and hasattr(self,'storage_rows'):
+                self.filter_storage()
         def refresh_scheduler(self):
             info=scheduler_status()
             if not info['supported']:
-                self.scheduler_info.setText('Ej tillgänglig på detta system (CLI kan köras via annan schemaläggare).')
+                self.scheduler_info.setText('Not available on this system (the CLI can use another scheduler).')
             else:
-                self.scheduler_info.setText(f"Installerad: {'Ja' if info['installed'] else 'Nej'}  ·  Aktiv: {'Ja' if info['active'] else 'Nej'}  ·  Aktiverad vid inloggning: {'Ja' if info['enabled'] else 'Nej'}")
+                self.scheduler_info.setText(f"Installed: {'Yes' if info['installed'] else 'No'}  ·  Active: {'Yes' if info['active'] else 'No'}  ·  Enabled at login: {'Yes' if info['enabled'] else 'No'}")
         def install_scheduler_ui(self):
-            if QMessageBox.question(self,'Install scheduler','Installera systemd user timer för timvis körning? Befintliga regler ändras inte.')!=QMessageBox.Yes:return
+            if QMessageBox.question(self,'Install scheduler','Install an hourly systemd user timer? Existing rules will not change.')!=QMessageBox.Yes:return
             try:
                 scheduler_install();self.refresh_scheduler()
-            except Exception as exc:QMessageBox.warning(self,'Schemaläggare',str(exc))
+            except Exception as exc:QMessageBox.warning(self,'Scheduler',str(exc))
         def toggle_scheduler_ui(self,enabled):
             try:
                 scheduler_set_enabled(enabled);self.refresh_scheduler()
-            except Exception as exc:QMessageBox.warning(self,'Schemaläggare',str(exc))
+            except Exception as exc:QMessageBox.warning(self,'Scheduler',str(exc))
         def export_backup_ui(self):
             target,_=QFileDialog.getSaveFileName(self,'Export configuration',str(Path.home()/'niruflow-config-backup.zip'),'ZIP (*.zip)')
             if not target:return
@@ -916,10 +987,10 @@ def launch():
         def import_backup_ui(self):
             source,_=QFileDialog.getOpenFileName(self,'Import configuration',str(Path.home()),'ZIP (*.zip)')
             if not source:return
-            if QMessageBox.question(self,'Bekräfta import','Import ersätter profiler, regler och inställningar. Befintlig konfiguration säkerhetskopieras först. Fortsätta?')!=QMessageBox.Yes:return
+            if QMessageBox.question(self,'Confirm import','Import replaces profiles, rules and settings. The current configuration is backed up first. Continue?')!=QMessageBox.Yes:return
             try:
                 import_config(source)
-                QMessageBox.information(self,'Import klar','Konfigurationen är importerad. Starta om NIRUFLOW för att läsa in den nya profilen och reglerna.')
+                QMessageBox.information(self,'Import complete','Configuration imported. Restart NIRUFLOW to load the updated profiles and rules.')
             except Exception as exc:QMessageBox.warning(self,'Import misslyckades',str(exc))
         def change_profile(self,key):
             if key and key in self.cfg.get('profiles',{}):
@@ -931,7 +1002,7 @@ def launch():
             if not ok or not name.strip():return
             key=name.strip().lower().replace(' ','-')
             if key in self.cfg['profiles']:
-                QMessageBox.warning(self,'Finns redan','Profilnamnet används redan')
+                QMessageBox.warning(self,'Already exists','Profile name is already in use')
                 return
             self.cfg['profiles'][key]={'name':name.strip(),'locations':[]}
             self.cfg['active_profile']=key
@@ -939,7 +1010,7 @@ def launch():
             self.profile_box.addItem(key)
             self.profile_box.setCurrentText(key)
         def refresh_locations(self):
-            fill(self.locations_table,[(x['name'],x['kind'],x['path'],'Ja' if x.get('enabled',True) else 'Nej') for x in locations(self.cfg)])
+            fill(self.locations_table,[(x['name'],x['kind'],x['path'],'Yes' if x.get('enabled',True) else 'No') for x in locations(self.cfg)])
         def selected_location(self):
             selected=self.locations_table.selectedItems()
             if not selected:return None
@@ -950,7 +1021,7 @@ def launch():
         def add_location_ui(self):
             name,ok=QInputDialog.getText(self,'Ny plats','Name')
             if not ok or not name.strip():return
-            kind,ok=QInputDialog.getItem(self,'Typ','Platsens funktion',['projects','docker','storage'],0,False)
+            kind,ok=QInputDialog.getItem(self,'Location type','Select the purpose of this location',['projects','docker','storage'],0,False)
             if not ok:return
             path=QFileDialog.getExistingDirectory(self,'Choose directory',str(Path.home()))
             if not path:return
@@ -972,7 +1043,7 @@ def launch():
         def remove_location_ui(self):
             entry=self.selected_location()
             if not entry:return
-            if QMessageBox.question(self,'Ta bort plats','Ta bort platsen från konfigurationen? Inga filer raderas.')!=QMessageBox.Yes:return
+            if QMessageBox.question(self,'Remove location','Remove this location from the configuration? No files will be deleted.')!=QMessageBox.Yes:return
             profile(self.cfg)['locations'].remove(entry)
             save(self.cfg);self.refresh_locations()
 

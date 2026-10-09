@@ -13,6 +13,10 @@ def defaults():
     return migrate({
         "version": 2,
         "language": "en",
+        "locale": "sv_SE",
+        "date_format": "yyyy-MM-dd",
+        "time_format": "HH:mm",
+        "show_weekday": True,
         "theme": "Niru Noir",
         "quarantine_days": 30,
         "rules": [

@@ -1,19 +1,26 @@
 """Read-only storage inventory, bounded traversal."""
 import hashlib
 import os
+import time
 from pathlib import Path
 from ..core.locations import expand_path
 SKIP={'.git','node_modules','.venv','venv','__pycache__','.cache','.local','.config','.next'}
 
-def files(root,limit=20000):
+def files(root,limit=20000,cancelled=None,progress=None):
     base=expand_path(str(root))
     if not base.is_dir(): return []
-    out=[]; stack=[base]
+    out=[]; stack=[base]; last_report=0.0
     while stack and len(out)<limit:
+        if cancelled and cancelled():break
         folder=stack.pop()
+        now=time.monotonic()
+        if progress and now-last_report>=0.25:
+            progress((len(out),str(folder)))
+            last_report=now
         try:
             with os.scandir(folder) as entries:
                 for e in entries:
+                    if cancelled and cancelled():break
                     if e.is_symlink(): continue
                     try:
                         if e.is_dir(follow_symlinks=False):
@@ -26,26 +33,34 @@ def files(root,limit=20000):
         except OSError:continue
     return out
 
-def largest(roots,limit=100):
+def largest(roots,limit=100,cancelled=None,progress=None):
     rows=[]
-    for root in roots:rows.extend(files(root))
+    for root in roots:
+        if cancelled and cancelled():break
+        rows.extend(files(root,cancelled=cancelled,progress=progress))
     return sorted(rows,key=lambda x:x['bytes'],reverse=True)[:limit]
 
-def duplicates(roots,limit=100):
+def duplicates(roots,limit=100,cancelled=None,progress=None):
     """Group by size, then SHA-256. Never delete or assume which copy is authoritative."""
     by_size={}
     for root in roots:
-        for row in files(root):
+        if cancelled and cancelled():break
+        for row in files(root,cancelled=cancelled,progress=progress):
             if row['bytes']>0:by_size.setdefault(row['bytes'],[]).append(row)
     results=[]
     for size,group in by_size.items():
+        if cancelled and cancelled():break
         if len(group)<2:continue
         hashes={}
         for row in group:
+            if cancelled and cancelled():break
             try:
                 digest=hashlib.sha256()
                 with open(row['path'],'rb') as stream:
-                    for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)
+                    for chunk in iter(lambda:stream.read(1024*1024),b''):
+                        if cancelled and cancelled():break
+                        digest.update(chunk)
+                if cancelled and cancelled():break
                 hashes.setdefault(digest.hexdigest(),[]).append(row)
             except OSError:continue
         for digest,items in hashes.items():
