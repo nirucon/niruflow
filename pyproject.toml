@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "niruflow"
+version = "0.1.0a1"
+description = "Local-first file maintenance and automation"
+requires-python = ">=3.10"
+authors = [{name = "Ing Leif Nicklas Rudolfsson"}]
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+desktop = ["PySide6>=6.5"]
+
+[project.scripts]
+niruflow = "niruflow.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["niruflow*"]
