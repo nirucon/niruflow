@@ -40,6 +40,8 @@ jobs:
           python -m unittest discover -s tests -v
       - name: Install desktop dependencies and smoke the GUI
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
           python -m pip install '.[desktop]'
           QT_QPA_PLATFORM=offscreen NIRUFLOW_SMOKE=1 timeout 20 python -m niruflow desktop
       - name: Package
