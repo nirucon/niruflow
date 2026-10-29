@@ -83,6 +83,17 @@ def nirux_palette(config_dir=None,theme_id=None):
     hover=_mix(bg,border,0.65)
     return bg,panel,fg,muted,border,hover,focus
 
+def nirux_theme_signature(config_dir=None):
+    """Stable token for the active NIRUX theme and its user override."""
+    base=Path(config_dir or os.environ.get('XDG_CONFIG_HOME',Path.home()/'.config'))/'niruwm'
+    theme_id=nirux_theme_id(config_dir)
+    def mtime(path):
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return 0
+    return (theme_id, mtime(base/'config.toml'), mtime(base/'themes'/f'{theme_id}.toml'))
+
 def theme_names():
     return [FOLLOW_NIRUX,*THEMES]
 

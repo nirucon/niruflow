@@ -38,6 +38,10 @@ jobs:
         run: |
           python -m compileall -q niruflow
           python -m unittest discover -s tests -v
+      - name: Install desktop dependencies and smoke the GUI
+        run: |
+          python -m pip install '.[desktop]'
+          QT_QPA_PLATFORM=offscreen NIRUFLOW_SMOKE=1 timeout 20 python -m niruflow desktop
       - name: Package
         run: |
           version=${TAG#v}

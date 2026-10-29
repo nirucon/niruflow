@@ -4,6 +4,7 @@ import stat
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from ..core.safety import fingerprint, fingerprint_full, identity
 
 EXCLUDED = {".cache", ".local", ".config", ".git", ".ssh", ".gnupg", ".mozilla", ".thunderbird", ".var", "node_modules", "venv", ".venv", "proc", "sys"}
 
@@ -37,7 +38,7 @@ def find_old_files(root, months=12, limit=100, cancelled=None, progress=None):
                 st=path.lstat()
                 if not stat.S_ISREG(st.st_mode) or st.st_nlink!=1 or st.st_mtime>threshold:
                     continue
-                found.append({"path":str(path),"bytes":st.st_size,"modified":datetime.fromtimestamp(st.st_mtime,timezone.utc).isoformat()})
+                found.append({"path":str(path),"bytes":st.st_size,"mtime":st.st_mtime,"modified":datetime.fromtimestamp(st.st_mtime,timezone.utc).isoformat(),**identity(st),"fingerprint":fingerprint(path),"fingerprint_full":fingerprint_full(path)})
                 if len(found)>=limit:
                     return sorted(found,key=lambda x:x["modified"])
             except OSError:

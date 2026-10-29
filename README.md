@@ -10,8 +10,9 @@ synchronize as a deletion on other devices.
 
 ## Current status
 
-**0.5.0** — Experimental. Review every destructive action, especially cleanup
-inside synchronized directories.
+**0.6.0** — Experimental. Review every destructive action, especially cleanup
+inside synchronized directories. Small and medium files use a full SHA-256
+fingerprint; files over 64 MiB use a bounded first/last-block fingerprint.
 
 ## Features
 
@@ -31,7 +32,7 @@ inside synchronized directories.
 Download the latest release and extract the archive:
 
 ```bash
-cd NIRUFLOW-0.5.0
+cd NIRUFLOW-0.6.0
 bash ./install.sh
 ~/.local/bin/niruflow
 ```
@@ -54,7 +55,8 @@ updates do not silently install or replace it.
 
 - Never delete directories, symlinks or hard-linked files through storage tools.
 - A changed inode, device, timestamp or content fingerprint blocks deletion.
-- Nextcloud-synced paths require explicit confirmation.
+- Known sync roots (Nextcloud, Dropbox, OneDrive, Google Drive, MEGAsync, rclone
+  and similar) require explicit confirmation.
 - No cloud service, account or background daemon is required.
 
 ## License

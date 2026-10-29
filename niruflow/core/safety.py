@@ -1,9 +1,52 @@
 from pathlib import Path
+import hashlib
 import os
 import stat
 
+# Known sync roots. The comparison is case-insensitive and path-component
+# based, so a folder named "Nextcloud" or "Dropbox" is protected even after a
+# case change, while an unrelated filename such as "my-sync-notes" is not.
+SYNC_MARKERS = (
+    "nextcloud", "owncloud", "dropbox", "onedrive", "google drive",
+    "google-drive", "googledrive", "megasync", "mega", "pcloud",
+    "icloud drive", "icloud-drive", "seafile", "syncthing", "rclone",
+)
+
+def sync_provider(path):
+    parts = {part.casefold() for part in Path(path).expanduser().resolve(strict=False).parts}
+    for marker in SYNC_MARKERS:
+        if marker in parts:
+            return marker
+    return None
+
+def is_synced(path):
+    return sync_provider(path) is not None
+
 def is_nextcloud(path):
-    return "Nextcloud" in Path(path).expanduser().resolve(strict=False).parts
+    # Kept as the compatibility name used by older callers and tests. It now
+    # protects every recognized sync provider, not only Nextcloud.
+    return is_synced(path)
+
+def identity(st):
+    return {"device": st.st_dev, "inode": st.st_ino, "ctime_ns": st.st_ctime_ns}
+
+def fingerprint(path):
+    """Bounded content fingerprint; full SHA-256 for files up to 64 MiB."""
+    size = Path(path).stat().st_size
+    digest = hashlib.sha256()
+    digest.update(str(size).encode("ascii"))
+    with open(path, "rb") as stream:
+        if size <= 64 * 1024 * 1024:
+            for chunk in iter(lambda: stream.read(128 * 1024), b""):
+                digest.update(chunk)
+        else:
+            digest.update(stream.read(128 * 1024))
+            stream.seek(-128 * 1024, 2)
+            digest.update(stream.read(128 * 1024))
+    return digest.hexdigest()
+
+def fingerprint_full(path):
+    return Path(path).stat().st_size <= 64 * 1024 * 1024
 
 def safe_file(path,root):
     path=Path(path)

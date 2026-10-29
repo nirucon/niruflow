@@ -1,13 +1,16 @@
-# NIRUFLOW 0.5.0
+# NIRUFLOW 0.6.0
 
-This release tightens deletion safety and makes NIRUFLOW part of the NIRUX
-desktop instead of a lookalike.
+This release tightens the parts that could otherwise look finished while still
+being unsafe.
 
-- Storage deletion now verifies device, inode, ctime and a bounded content
-  fingerprint before unlinking. Same-size rewrites with coarse filesystem
-  timestamps are rejected.
-- **NIRUX desktop** theme follows the active NIRUWM theme and user theme file.
-  All ten built-in NIRUX palettes are available as fallbacks.
-- Version and release metadata are synchronized across the CLI, GUI, installer
-  and tests.
-- The README reflects the current feature set, safety model and NIRUX integration.
+- GUI storage rows now retain device, inode, ctime and content fingerprint
+  data until deletion, so the protection is actually used by the interface.
+- Full SHA-256 for files up to 64 MiB; larger files use a bounded first/last
+  block fingerprint and the UI states that limitation.
+- Sync protection covers Nextcloud, ownCloud, Dropbox, OneDrive, Google Drive,
+  MEGAsync, pCloud, iCloud Drive, Seafile, Syncthing and rclone path roots.
+- **NIRUX desktop** theme follows the active NIRUWM theme live while the window
+  is open.
+- PySide6 is bounded to the 6.x major series.
+- Offscreen GUI smoke mode (`NIRUFLOW_SMOKE=1`) added for CI/release checks.
+- Desktop icon added.

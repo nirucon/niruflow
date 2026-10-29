@@ -30,7 +30,7 @@ def scan(rule,now=None):
 def quarantine(rule,items,allow_synced=False):
     root=validate_root(rule["path"])
     if is_nextcloud(root) and not allow_synced:
-        raise PermissionError("Nextcloud requires explicit --allow-synced confirmation")
+        raise PermissionError("Synced location requires explicit --allow-synced confirmation")
     destroot=STATE/"quarantine"
     destroot.mkdir(parents=True,exist_ok=True)
     if os.stat(root).st_dev != os.stat(destroot).st_dev:

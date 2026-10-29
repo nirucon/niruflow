@@ -1,5 +1,6 @@
 """NIRUFLOW desktop shell. Views use the same independent core as the CLI."""
 import json
+import os
 import sys
 from datetime import datetime
 from .localization import tr, apply_locale, format_datetime, REGIONS, DATE_PATTERNS, TIME_PATTERNS
@@ -22,7 +23,7 @@ from ..modules.compose import discover
 from ..modules.storage import largest, duplicates, storage_quarantine, storage_delete, file_category
 from ..modules.docker_cleanup import preview as image_cleanup_preview, apply as image_cleanup_apply
 from ..core.formatting import human_size
-from .themes import theme_names, stylesheet
+from .themes import FOLLOW_NIRUX, nirux_theme_signature, theme_names, stylesheet
 from .widgets import make_table, populate_table
 
 
@@ -170,6 +171,10 @@ def launch():
             self.build_settings()
             apply_locale(QApplication.instance(),self.cfg.get('locale','sv_SE'))
             self.change_theme(self.theme.currentText())
+            self._nirux_signature=nirux_theme_signature()
+            self.theme_watch=QTimer(self)
+            self.theme_watch.timeout.connect(self.watch_nirux_theme)
+            self.theme_watch.start(1500)
             self.navigate(0)
         def closeEvent(self,event):
             if any(thread.isRunning() for thread in self.jobs):
@@ -180,7 +185,16 @@ def launch():
         def change_theme(self,theme):
             QApplication.instance().setStyleSheet(stylesheet(theme))
             self.cfg['theme']=theme
+            self._nirux_signature=nirux_theme_signature()
             save(self.cfg)
+        def watch_nirux_theme(self):
+            if self.theme.currentText()!=FOLLOW_NIRUX:
+                return
+            current=nirux_theme_signature()
+            if current!=self._nirux_signature:
+                self._nirux_signature=current
+                QApplication.instance().setStyleSheet(stylesheet(FOLLOW_NIRUX))
+                self.statusBar().showMessage('NIRUX theme changed; palette updated')
         def navigate(self,index):
             self.stack.setCurrentIndex(index)
             for i,nav in enumerate(self.nav):
@@ -237,7 +251,7 @@ def launch():
             rules=self.cfg.get('rules',[])
             enabled=sum(bool(x.get('enabled')) for x in rules)
             rows=history(10)
-            self.overview_status.setText(f'Automations: {enabled}/{len(rules)} enabled    ·    Recent actions: {len(rows)}    ·    Nextcloud: manual review')
+            self.overview_status.setText(f'Automations: {enabled}/{len(rules)} enabled    ·    Recent actions: {len(rows)}    ·    Synced folders: manual review')
             try:
                 disk=shutil.disk_usage(Path.home())
                 self.overview_disk.setText(f'Home filesystem    ·    Free: {human_size(disk.free)}    ·    Used: {human_size(disk.used)}    ·    Capacity: {human_size(disk.total)}')
@@ -250,7 +264,7 @@ def launch():
             v.addWidget(label('Rules run independently through CLI or the optional background scheduler.',True))
             self.rules_table=table(['Rule','Directory','Age','Enabled','Background'])
             v.addWidget(self.rules_table)
-            v.addWidget(label('Synced Nextcloud paths are excluded from unattended cleanup.',True))
+            v.addWidget(label('Synced folders are excluded from unattended cleanup.',True))
             controls=QHBoxLayout()
             controls.addWidget(button('Enable / Disable',self.toggle_rule_ui))
             controls.addWidget(button('Edit rule',self.edit_rule_ui))
@@ -287,7 +301,7 @@ def launch():
             rule=self.selected_rule()
             if not rule:return
             if is_nextcloud(rule['path']):
-                QMessageBox.warning(self,'Synced directory','Automatic actions in Nextcloud are blocked. Use manual File Cleanup review.')
+                QMessageBox.warning(self,'Synced directory','Automatic actions in synced folders are blocked. Use manual File Cleanup review.')
                 return
             if not rule.get('enabled'):
                 QMessageBox.information(self,'Disabled','Enable this rule first.')
@@ -341,7 +355,7 @@ def launch():
             controls.addWidget(button('Select all',self.cleanup_table.selectAll))
             controls.addWidget(button('Move selected to quarantine',self.apply_cleanup))
             v.addLayout(controls)
-            v.addWidget(label('Subdirectories are not traversed. Protected names are excluded.',True))
+            v.addWidget(label('Subdirectories are not traversed. Protected names are excluded. Large files use a bounded content fingerprint; inspect the file size and path before permanent deletion.',True))
             self.show_rule()
         def rule(self):
             return self.cfg['rules'][self.rulebox.currentIndex()]
@@ -387,7 +401,7 @@ def launch():
                 return
             synced=is_nextcloud(self.rule()['path'])
             msg=f'Move {len(candidates)} selected files to local quarantine?'
-            if synced:msg+='\n\nVARNING: Nextcloud synkroniserar bortflyttningen som radering till andra enheter.'
+            if synced:msg+='\n\nWARNING: a sync client may propagate this move as a deletion to other devices.'
             if QMessageBox.question(self,'Confirm action',msg)!=QMessageBox.Yes:return
             try:
                 moved=quarantine(self.rule(),candidates,allow_synced=synced)
@@ -722,10 +736,10 @@ def launch():
             synced=any(is_nextcloud(x['path']) for x in rows)
             total=sum(x['bytes'] for x in rows)
             message=f'Move {len(rows)} files ({human_size(total)}) to quarantine?\n\nFiles are revalidated before moving.\nQuarantine requires the same filesystem.'
-            if synced:message+='\n\nWARNING: Nextcloud will synchronize the removal to other devices.'
+            if synced:message+='\n\nWARNING: a sync client may propagate the removal to other devices.'
             if QMessageBox.question(self,'Confirm quarantine',message)!=QMessageBox.Yes:return
             if synced:
-                answer,ok=QInputDialog.getText(self,'Confirm Nextcloud change','Type SYNC DELETE to confirm removal from synchronized directories:')
+                answer,ok=QInputDialog.getText(self,'Confirm synced-folder change','Type SYNC DELETE to confirm removal from synchronized directories:')
                 if not ok or answer!='SYNC DELETE':return
             self.run_task(lambda:storage_quarantine(rows,allow_synced=synced),self.storage_moved)
         def storage_delete_selected(self):
@@ -739,7 +753,7 @@ def launch():
             message=(f'PERMANENTLY delete {len(rows)} selected files ({human_size(total)})?\n\n'
                      'This cannot be undone locally. Files will be checked again before deletion.')
             if synced:
-                message+='\n\nNextcloud will synchronize these deletions to the server and other devices.'
+                message+='\n\nA sync client may propagate these deletions to the server and other devices.'
             if QMessageBox.question(self,'Confirm permanent deletion',message,QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:return
             phrase='DELETE SYNCED' if synced else 'DELETE'
             answer,ok=QInputDialog.getText(self,'Final confirmation',f'Type {phrase} to permanently delete the selected files:')
@@ -808,9 +822,12 @@ def launch():
             self.filter_storage()
         def storage_done(self,rows,mode='files'):
             self.storage_mode=mode
-            self.storage_rows=[{'path':x['path'],'bytes':x['bytes'],
-               'mtime':x.get('mtime') or (datetime.fromisoformat(x['modified']).timestamp() if x.get('modified') else 0),
-               'category':file_category(x['path'])} for x in rows]
+            self.storage_rows=[]
+            for x in rows:
+                row=dict(x)
+                row['mtime']=x.get('mtime') or (datetime.fromisoformat(x['modified']).timestamp() if x.get('modified') else 0)
+                row['category']=file_category(x['path'])
+                self.storage_rows.append(row)
             self.filter_storage()
         def build_media(self):
             from ..modules.media import default_roots
@@ -1051,4 +1068,6 @@ def launch():
     app=QApplication.instance() or QApplication(sys.argv)
     window=Window()
     window.show()
+    if os.environ.get("NIRUFLOW_SMOKE") == "1":
+        QTimer.singleShot(1500, app.quit)
     return app.exec()

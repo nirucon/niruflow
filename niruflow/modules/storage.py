@@ -4,29 +4,8 @@ import os
 import time
 from pathlib import Path
 from ..core.locations import expand_path
+from ..core.safety import fingerprint, fingerprint_full, identity
 SKIP={'.git','node_modules','.venv','venv','__pycache__','.cache','.local','.config','.next'}
-
-def fingerprint(path):
-    """A bounded content fingerprint for change detection before deletion.
-
-    Small files are fully hashed; large files use the first and last 128 KiB
-    plus their size. Metadata checks remain the fast path, and the fingerprint
-    catches same-size rewrites when the filesystem timestamp is too coarse.
-    """
-    import hashlib
-    size = Path(path).stat().st_size
-    digest = hashlib.sha256()
-    digest.update(str(size).encode('ascii'))
-    with open(path, 'rb') as stream:
-        if size <= 1024 * 1024:
-            for chunk in iter(lambda: stream.read(128 * 1024), b''):
-                digest.update(chunk)
-        else:
-            digest.update(stream.read(128 * 1024))
-            stream.seek(-128 * 1024, 2)
-            digest.update(stream.read(128 * 1024))
-    return digest.hexdigest()
-
 
 def files(root,limit=20000,cancelled=None,progress=None,fingerprint_content=False):
     base=expand_path(str(root))
@@ -50,9 +29,11 @@ def files(root,limit=20000,cancelled=None,progress=None,fingerprint_content=Fals
                         elif e.is_file(follow_symlinks=False):
                             st=e.stat(follow_symlinks=False)
                             if st.st_nlink==1:
-                                row={'path':e.path,'bytes':st.st_size,'mtime':st.st_mtime,'ctime_ns':st.st_ctime_ns,'inode':st.st_ino,'device':st.st_dev}
+                                row={'path':e.path,'bytes':st.st_size,'mtime':st.st_mtime, **identity(st)}
                                 if fingerprint_content:
-                                    try: row['fingerprint']=fingerprint(e.path)
+                                    try:
+                                        row['fingerprint']=fingerprint(e.path)
+                                        row['fingerprint_full']=fingerprint_full(e.path)
                                     except OSError: continue
                                 out.append(row)
                     except OSError:continue
