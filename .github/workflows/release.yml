@@ -1,0 +1,54 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'existing tag to rebuild, for example v0.5.0'
+        required: true
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse anything that is not a tag
+        env:
+          REF: ${{ github.ref }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            [ -n "$INPUT_TAG" ] || { echo 'a tag is required'; exit 1; }
+            echo "TAG=$INPUT_TAG" >> "$GITHUB_ENV"
+          else
+            case "$REF" in refs/tags/v*) echo "TAG=${REF#refs/tags/}" >> "$GITHUB_ENV" ;; *) exit 1 ;; esac
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Confirm tag and source version match
+        run: |
+          version=$(python -c 'from niruflow.core.version import VERSION; print(VERSION)')
+          test "v$version" = "$TAG"
+      - name: Release gate
+        run: |
+          python -m compileall -q niruflow
+          python -m unittest discover -s tests -v
+      - name: Package
+        run: |
+          version=${TAG#v}
+          mkdir -p "dist/NIRUFLOW-$version"
+          git archive --format=tar HEAD | tar -x -C "dist/NIRUFLOW-$version"
+          (cd dist && zip -qr "NIRUFLOW-$version.zip" "NIRUFLOW-$version")
+          (cd dist && sha256sum "NIRUFLOW-$version.zip" > SHA256SUMS)
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: |
+            dist/NIRUFLOW-*.zip
+            dist/SHA256SUMS
+          generate_release_notes: true

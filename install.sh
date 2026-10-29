@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 command -v python3 >/dev/null || { echo "Python 3 is required" >&2; exit 1; }
-VERSION="0.4.1"
+VERSION="0.5.0"
 BASE="${XDG_DATA_HOME:-$HOME/.local/share}/niruflow"
 STAGING="$BASE/versions/$VERSION"
 mkdir -p "$BASE/versions" "$HOME/.local/bin" "${XDG_DATA_HOME:-$HOME/.local/share}/applications"
@@ -13,7 +13,7 @@ fi
 "$STAGING/venv/bin/python" -m pip install --disable-pip-version-check '.[desktop]'
 # Only compile first-party source. PySide6 ships non-Python Jinja templates ending in .py.
 "$STAGING/venv/bin/python" -m compileall -q niruflow
-"$STAGING/venv/bin/python" -c 'from niruflow.core.version import VERSION; assert VERSION == "0.4.1"; from niruflow.desktop.app import launch'
+"$STAGING/venv/bin/python" -c 'from niruflow.core.version import VERSION; assert VERSION == "0.5.0"; from niruflow.desktop.app import launch'
 # Atomic symlink replacement; preserve the legacy venv and all user data.
 ln -sfn "$STAGING" "$BASE/current.next"
 mv -Tf "$BASE/current.next" "$BASE/current"

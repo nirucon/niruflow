@@ -1,5 +1,13 @@
-# NIRUFLOW 0.4.1
+# NIRUFLOW 0.5.0
 
-English-only application interface. Regional date and time preferences are independent of the UI language: Sweden (default), UK and US; ISO, day-first and month-first dates; 24-hour and 12-hour clocks; optional regional weekday abbreviations. Existing configuration, history and quarantine remain untouched.
+This release tightens deletion safety and makes NIRUFLOW part of the NIRUX
+desktop instead of a lookalike.
 
-Includes fixes for mixed-language labels in Settings, History and location management, plus a live formatting example. This is an alpha-stage release and requires real-world GUI testing on Omarchy/Hyprland.
+- Storage deletion now verifies device, inode, ctime and a bounded content
+  fingerprint before unlinking. Same-size rewrites with coarse filesystem
+  timestamps are rejected.
+- **NIRUX desktop** theme follows the active NIRUWM theme and user theme file.
+  All ten built-in NIRUX palettes are available as fallbacks.
+- Version and release metadata are synchronized across the CLI, GUI, installer
+  and tests.
+- The README reflects the current feature set, safety model and NIRUX integration.

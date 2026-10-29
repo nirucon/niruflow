@@ -17,7 +17,7 @@ def defaults():
         "date_format": "yyyy-MM-dd",
         "time_format": "HH:mm",
         "show_weekday": True,
-        "theme": "Niru Noir",
+        "theme": "NIRUX desktop",
         "quarantine_days": 30,
         "rules": [
             {"id":"downloads","name":"Downloads","path":str(home/"Downloads"),

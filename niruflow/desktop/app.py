@@ -6,6 +6,7 @@ from .localization import tr, apply_locale, format_datetime, REGIONS, DATE_PATTE
 from pathlib import Path
 
 from ..core.config import load, save
+from ..core.version import VERSION
 from ..core.backup import export_config, import_config
 from ..core.scheduler import status as scheduler_status, install as scheduler_install, set_enabled as scheduler_set_enabled
 from ..core.planning import preview_rules
@@ -21,7 +22,7 @@ from ..modules.compose import discover
 from ..modules.storage import largest, duplicates, storage_quarantine, storage_delete, file_category
 from ..modules.docker_cleanup import preview as image_cleanup_preview, apply as image_cleanup_apply
 from ..core.formatting import human_size
-from .themes import THEMES, stylesheet
+from .themes import theme_names, stylesheet
 from .widgets import make_table, populate_table
 
 
@@ -105,7 +106,7 @@ def launch():
             self.storage_job=None
             self.candidates=[]
             self.image_cleanup_plan=None
-            self.setWindowTitle('NIRUFLOW 0.4.1')
+            self.setWindowTitle(f'NIRUFLOW {VERSION}')
             self.resize(1180,760)
             host=QWidget()
             layout=QVBoxLayout(host)
@@ -117,7 +118,7 @@ def launch():
             header.addStretch()
             header.addWidget(label('Theme',True))
             self.theme=QComboBox()
-            self.theme.addItems(THEMES)
+            self.theme.addItems(theme_names())
             self.theme.setCurrentText(self.cfg.get('theme','Niru Noir'))
             self.theme.currentTextChanged.connect(self.change_theme)
             header.addWidget(self.theme)
@@ -150,7 +151,7 @@ def launch():
                 self.pages[name]=page_layout
                 self.stack.addWidget(page)
             side.addStretch()
-            side.addWidget(label('0.4.1  ·  Ing Leif Nicklas Rudolfsson',True))
+            side.addWidget(label(f'{VERSION}  ·  Ing Leif Nicklas Rudolfsson',True))
             splitter.addWidget(self.sidebar)
             splitter.addWidget(self.stack)
             splitter.setSizes([192,980])
@@ -870,7 +871,7 @@ def launch():
                 QMessageBox.warning(self,'Restore failed',str(exc))
         def build_settings(self):
             v=self.pages['Settings']
-            v.addWidget(label('NIRUFLOW 0.4.1 · Ing Leif Nicklas Rudolfsson · MIT'))
+            v.addWidget(label(f'NIRUFLOW {VERSION} · Ing Leif Nicklas Rudolfsson · MIT'))
             v.addWidget(label('Interface language: English · Regional formatting'))
             locale_row=QHBoxLayout()
             self.locale_box=QComboBox();self.locale_box.addItems(REGIONS)

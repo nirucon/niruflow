@@ -11,6 +11,7 @@ from .modules.docker import inspect
 
 def main():
     p=argparse.ArgumentParser(prog="niruflow")
+    p.add_argument("--version", action="version", version=f"NIRUFLOW {VERSION}")
     sub=p.add_subparsers(dest="cmd")
     sub.add_parser("desktop")
     sub.add_parser("status")

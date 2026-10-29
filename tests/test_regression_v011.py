@@ -13,7 +13,7 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with patch.object(config,"BASE",Path(d)),patch.object(config,"CONFIG",Path(d)/"config.json"):
                 config.save(config.defaults())
-                self.assertEqual(config.load()["theme"],"Niru Noir")
+                self.assertEqual(config.load()["theme"],"NIRUX desktop")
                 self.assertEqual((Path(d)/"config.json").stat().st_mode & 0o777,0o600)
     def test_forgotten_does_not_follow_symlinks(self):
         with tempfile.TemporaryDirectory() as d:
