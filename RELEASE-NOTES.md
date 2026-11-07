@@ -1,3 +1,15 @@
+# NIRUFLOW 0.6.1
+
+Installer and uninstaller release; the application is unchanged.
+
+- New `uninstall.sh` (and `nirux extras uninstall niruflow`): disables and
+  removes the scheduler timer, the launcher, desktop entry, icon and installed
+  versions, and keeps rules, history and quarantine unless `--purge` is given.
+- On a fresh Debian system the installer installs `python3-venv` when venv
+  support is missing (asks in a terminal; `NIRUFLOW_ASSUME_YES=1` or
+  `NIRUX_ASSUME_YES=1` unattended) instead of failing.
+- A virtual environment left without pip by a failed attempt is rebuilt.
+
 # NIRUFLOW 0.6.0
 
 This release tightens the parts that could otherwise look finished while still

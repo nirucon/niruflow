@@ -157,18 +157,16 @@ path and per-machine location profiles. `niruflow backup-export` and
 
 ## Uninstall
 
-There is no uninstall script. To remove NIRUFLOW:
-
 ```sh
-systemctl --user disable --now niruflow.timer 2>/dev/null
-rm -f ~/.config/systemd/user/niruflow.service ~/.config/systemd/user/niruflow.timer
-rm -f ~/.local/bin/niruflow ~/.local/share/applications/niruflow.desktop \
-      ~/.local/share/icons/hicolor/scalable/apps/niruflow.svg
-rm -rf ~/.local/share/niruflow
+nirux extras uninstall niruflow     # with NIRUX
+./uninstall.sh                      # standalone, from a checkout
+./uninstall.sh --purge              # also delete rules, history and quarantine
 ```
 
-Check `~/.local/state/niruflow/quarantine/` for files you want back before
-removing `~/.local/state/niruflow` and `~/.config/niruflow`.
+A normal uninstall disables the scheduler timer and removes it, the launcher,
+the desktop entry, the icon and every installed version. Your rules and
+history in `~/.config/niruflow` and `~/.local/state/niruflow` are kept. Check
+`~/.local/state/niruflow/quarantine/` for files you want back before purging.
 
 ## Building from source
 
