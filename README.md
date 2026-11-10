@@ -63,7 +63,8 @@ nirux extras update            # later: update selected extras to the pinned ver
 ```
 
 NIRUX downloads the pinned release tag, verifies its SHA-256 and runs the
-project's own `install.sh`.
+project's own `install.sh`. In NIRUX, `nirux manual niruflow` opens the
+short tour in the NIRUX manual.
 
 ### Standalone
 
