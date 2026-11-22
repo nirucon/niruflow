@@ -1,0 +1,23 @@
+[package]
+name = "niruflow"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+description = "Local-first maintenance cockpit for the NIRU suite (X11)"
+
+[dependencies]
+x11rb = { version = "0.13", features = ["shm"] }
+ab_glyph = "0.2"
+toml = "0.8"
+libc = "0.2"
+serde_json = { version = "1", features = ["preserve_order"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+miniz_oxide = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3

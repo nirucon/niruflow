@@ -10,8 +10,10 @@ Local-first maintenance cockpit for file cleanup, storage review, projects and D
 
 NIRUFLOW is where I tidy up my machines: old downloads and screenshots,
 large and duplicate files, forgotten files, project artifacts and Docker
-leftovers. It has a desktop window (PySide6) and a command line that prints
-JSON.
+leftovers. It has a desktop window and a command line that prints JSON.
+Since 1.0.0 it is a single Rust binary: an X11 window drawn on its own
+canvas (no Qt, GTK or web engine) and parallel scans that never block the
+window.
 
 It keeps destructive work explicit. Scans are read-only, removals need
 confirmation, and cleanup moves files to a quarantine you can restore from
@@ -43,13 +45,15 @@ active NIRUWM theme.
 
 ## Requirements
 
-- Linux with Python 3.10+, `venv` and `pip` (on Debian: `python3-venv`).
-  Works on Debian, Arch and Void.
-- Network access on install: PySide6 (6.x) is installed from PyPI into a
-  private virtual environment.
+- Linux on x86_64 with X11 (under Wayland through XWayland). The release
+  binary is static (musl), so there is nothing else to install; fonts come
+  from fontconfig (`fc-match`), with DejaVu Sans Mono as the fallback.
+- `curl` or `wget` and `sha256sum` for the installer to fetch the release.
 - Optional: Docker for the Docker views; systemd for the scheduler (on Void
   or other non-systemd systems, schedule `niruflow run-enabled` with cron or
-  runit yourself).
+  runit yourself); `xdg-open` for "Open directory".
+- To build from source: Rust 1.82 or newer and a C compiler (SQLite is
+  built in).
 
 ## Installation
 
@@ -71,16 +75,18 @@ short tour in the NIRUX manual.
 Download and extract a release (or clone the repository), then:
 
 ```sh
-bash ./install.sh
+./install.sh              # the prebuilt binary of this version, SHA-256 verified
+./install.sh --build      # or build it here with cargo
 ~/.local/bin/niruflow
 ```
 
-The installer creates a virtual environment in
-`~/.local/share/niruflow/versions/VERSION/venv`, installs NIRUFLOW with its
-desktop extra, checks the version and that the GUI imports, then atomically
-points `~/.local/share/niruflow/current` at the new version and links
-`~/.local/bin/niruflow`. Older versions, configuration, history and
-quarantine are kept.
+The installer puts the binary in `~/.local/bin/niruflow` with a desktop
+entry and an icon. It replaces a 0.x Python installation: the old
+virtual environments in `~/.local/share/niruflow` and the launcher symlink
+go, and an installed scheduler unit is pointed at the new binary.
+Configuration, history and quarantine are never touched, and 1.0.0 reads
+them unchanged (the same `config.json`, `history.sqlite3` and backup ZIP
+format).
 
 To run selected rules every hour (systemd user timer):
 
@@ -119,7 +125,33 @@ niruflow backup-import SOURCE
 niruflow --version
 ```
 
-Output is JSON, so it pipes well into `jq`.
+Output is JSON, so it pipes well into `jq`. The JSON is the same as in
+0.x (layout, key order and number format), so existing scripts keep
+working. `doctor` reports `"not required"` for `python` and `pyside6` and
+adds the `niruflow` version. Two results are better than before:
+`large-files` no longer stops after 20,000 files per location and lists a
+file once even when locations overlap (home and `~/Nextcloud`), and
+`forgotten` returns the oldest files instead of the first ones found.
+(`projects` failed in 0.6.1 and works again.)
+
+### Keys
+
+| Key | Action |
+|---|---|
+| Ctrl+1 ... Ctrl+9, Alt+1 ... Alt+9 | Pages |
+| Ctrl+PageUp / Ctrl+PageDown | Previous / next page |
+| Tab / Shift+Tab | Move between the page's fields and table |
+| Up, Down, PageUp, PageDown, Home, End | Move in a table (Shift extends) |
+| Ctrl+A | Select all rows |
+| Ctrl+C | Copy the selected rows (tab separated) |
+| Ctrl+F | Focus the page's filter |
+| Menu, Shift+F10 | Storage context menu (also right click) |
+| F5 | Refresh the page |
+| Enter / Escape | Confirm / cancel a dialog (Yes/No dialogs default to No) |
+| Ctrl+Q, Ctrl+W | Close |
+
+Folder and file choices use a built-in browser: type a path, or click
+(double-click opens a folder); Ctrl+H shows hidden folders.
 
 ## Configuration
 
@@ -134,8 +166,7 @@ path and per-machine location profiles. `niruflow backup-export` and
 
 | Path | Purpose |
 |---|---|
-| `~/.local/bin/niruflow` | Launcher (symlink into the active venv) |
-| `~/.local/share/niruflow/versions/VERSION/` | Installed versions with their venv; `current` points to the active one |
+| `~/.local/bin/niruflow` | The program (one static binary) |
 | `~/.config/niruflow/config.json` | Configuration |
 | `~/.local/state/niruflow/history.sqlite3` | Action history (used by `restore`) |
 | `~/.local/state/niruflow/quarantine/` | Quarantined files |
@@ -164,20 +195,45 @@ nirux extras uninstall niruflow     # with NIRUX
 ./uninstall.sh --purge              # also delete rules, history and quarantine
 ```
 
-A normal uninstall disables the scheduler timer and removes it, the launcher,
-the desktop entry, the icon and every installed version. Your rules and
+A normal uninstall disables the scheduler timer and removes it, the binary,
+the desktop entry, the icon and any leftover 0.x installation. Your rules and
 history in `~/.config/niruflow` and `~/.local/state/niruflow` are kept. Check
 `~/.local/state/niruflow/quarantine/` for files you want back before purging.
 
 ## Building from source
 
-There is nothing to compile. The CI checks:
+```sh
+cargo build --release      # target/release/niruflow
+./install.sh --build       # build and install
+```
+
+The checks CI runs:
 
 ```sh
-python -m compileall -q niruflow
-python -m unittest discover -s tests -v
-QT_QPA_PLATFORM=offscreen NIRUFLOW_SMOKE=1 timeout 20 python -m niruflow desktop
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+sh tests/xvfb.sh target/release/niruflow     # private Xvfb: first frame, memory, idle CPU, main flows
+sh tests/scripts.sh target/release/niruflow  # installer upgrade from 0.x and uninstaller
 ```
+
+## Performance
+
+Measured on othala (12 threads, NVMe) in the same private Xvfb, 0.6.1
+(Python, PySide6) against 1.0.0:
+
+| | 0.6.1 | 1.0.0 |
+|---|---|---|
+| Window shown (time until mapped) | 530 ms (1,010 ms cold) | 32 to 78 ms |
+| First frame drawn (own timing) | | 11 to 40 ms |
+| Memory (RSS, idle window) | 90 MB | 13 MB |
+| Idle CPU | 0 ticks in 10 s | 0 ticks in 10 s (sleeps in poll) |
+| `large-files` on a real home | 128 s | 0.6 s (0.1 s cached) |
+| `forgotten --months 12` | 0.41 s | 0.035 s |
+| `media` | 44 ms | 2 ms |
+
+Scans run on worker threads with a parallel directory walk, so the window
+stays responsive and a storage scan can be cancelled at any time.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md),
 [ROADMAP.md](ROADMAP.md) and [RELEASE-NOTES.md](RELEASE-NOTES.md).

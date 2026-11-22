@@ -1,50 +1,119 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+# NIRUFLOW installer.
+#
+#   ./install.sh             install the prebuilt release binary (verified by SHA-256)
+#   ./install.sh --build     build from this checkout with cargo instead
+#   ./install.sh --prebuilt  use ./niruflow beside this script (a release download)
+#
+# Installs ~/.local/bin/niruflow, the desktop entry and the icon. No root.
+# An older Python install (0.x: a venv under ~/.local/share/niruflow and a
+# launcher symlink) is replaced; rules, history and quarantine in
+# ~/.config/niruflow and ~/.local/state/niruflow are never touched.
+set -eu
 cd "$(dirname "$0")"
-command -v python3 >/dev/null || { echo "Python 3 is required" >&2; exit 1; }
-VERSION="0.6.1"
-BASE="${XDG_DATA_HOME:-$HOME/.local/share}/niruflow"
-STAGING="$BASE/versions/$VERSION"
-mkdir -p "$BASE/versions" "$HOME/.local/bin" "${XDG_DATA_HOME:-$HOME/.local/share}/applications" "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
-# Debian ships venv's ensurepip in python3-venv; Arch and Void include it with
-# Python. Without it `python3 -m venv` leaves a venv that has no pip.
-ensure_venv_support() {
-    python3 -c 'import ensurepip' >/dev/null 2>&1 && return 0
-    command -v apt-get >/dev/null 2>&1 || { echo "Python venv support (ensurepip) is missing; install it with your package manager." >&2; exit 1; }
-    if [[ ${NIRUFLOW_ASSUME_YES:-${NIRUX_ASSUME_YES:-0}} != 1 ]]; then
-        [[ -t 0 ]] || { echo "python3-venv is missing. Install it with: sudo apt-get install python3-venv (or rerun with NIRUFLOW_ASSUME_YES=1)." >&2; exit 1; }
-        read -r -p "python3-venv is required. Install it with sudo apt-get? [Y/n] " answer || answer=n
-        [[ $answer == [nN]* ]] && { echo "python3-venv is required." >&2; exit 1; }
+
+PREFIX="${NIRUFLOW_PREFIX:-$HOME/.local}"
+BINDIR="$PREFIX/bin"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+APPDIR="$DATA/applications"
+ICONDIR="$DATA/icons/hicolor/scalable/apps"
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
+MODE=auto
+
+for arg in "$@"; do
+    case "$arg" in
+        --build) MODE=build ;;
+        --prebuilt) MODE=prebuilt ;;
+        -h|--help)
+            printf '%s\n' "Usage: ./install.sh [--build|--prebuilt]"
+            exit 0
+            ;;
+        *) printf 'niruflow install: unknown option %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
+
+say() { printf '%s\n' "$*"; }
+die() { say "niruflow install: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1; }
+
+[ "$(id -u)" != 0 ] || die 'run ./install.sh as your desktop user, not as root'
+
+VERSION="${NIRUFLOW_VERSION:-}"
+if [ -z "$VERSION" ] && [ -f Cargo.toml ]; then
+    VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+fi
+[ -n "$VERSION" ] || die 'cannot determine the NIRUFLOW version (set NIRUFLOW_VERSION)'
+
+TMP=""
+trap 'rm -rf "$TMP"' EXIT
+if [ "$MODE" = build ]; then
+    need cargo || die 'Rust/cargo is required for --build'
+    say 'Building NIRUFLOW…'
+    cargo build --release --locked
+    BIN_SRC=target/release/niruflow
+elif [ "$MODE" = prebuilt ] || [ -x ./niruflow ]; then
+    [ -x ./niruflow ] || die './niruflow not found beside install.sh'
+    BIN_SRC=./niruflow
+else
+    [ "$(uname -m)" = x86_64 ] || die "no prebuilt release for $(uname -m); use ./install.sh --build"
+    need curl || need wget || die 'curl or wget is required to download the prebuilt binary'
+    need sha256sum || die 'sha256sum is required to verify the release binary'
+    TMP=$(mktemp -d)
+    BASE="https://github.com/nirucon/niruflow/releases/download/v${VERSION}"
+    say "Downloading prebuilt NIRUFLOW ${VERSION}…"
+    for f in niruflow SHA256SUMS; do
+        if need curl; then
+            curl -fsSL --retry 3 -o "$TMP/$f" "$BASE/$f" || die "could not download $f; nothing was changed"
+        else
+            wget -qO "$TMP/$f" "$BASE/$f" || die "could not download $f; nothing was changed"
+        fi
+    done
+    BIN_SRC="$TMP/niruflow"
+    SUMS="$TMP/SHA256SUMS"
+fi
+if [ "$MODE" != build ]; then
+    SUMS="${SUMS:-SHA256SUMS}"
+    if [ -f "$SUMS" ]; then
+        need sha256sum || die 'sha256sum is required to verify the release binary'
+        expected=$(awk '$2 == "niruflow" || $2 == "*niruflow" { print $1; exit }' "$SUMS")
+        actual=$(sha256sum "$BIN_SRC" | awk '{print $1}')
+        [ -n "$expected" ] && [ "$expected" = "$actual" ] || die 'the NIRUFLOW binary failed SHA-256 verification; nothing was changed'
+        say 'SHA-256 verification passed.'
+    elif [ -n "$TMP" ]; then
+        die 'release checksums missing'
     fi
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv
-}
-# Install into a dedicated version directory. Never overwrite user data or an older release.
-# A venv whose creation failed half-way has a python but no pip; rebuild it.
-if [[ -x "$STAGING/venv/bin/python" ]] && ! "$STAGING/venv/bin/python" -m pip --version >/dev/null 2>&1; then
-    rm -rf "$STAGING/venv"
 fi
-if [[ ! -x "$STAGING/venv/bin/python" ]]; then
-    ensure_venv_support
-    python3 -m venv "$STAGING/venv"
+chmod +x "$BIN_SRC"
+got=$("$BIN_SRC" --version 2>/dev/null | awk '{print $NF}')
+[ "$got" = "$VERSION" ] || die "the binary reports version '$got', expected $VERSION"
+
+install -d -m 0755 "$BINDIR" "$APPDIR" "$ICONDIR"
+# 0.x left ~/.local/bin/niruflow as a symlink into its venv: replace the
+# link itself, never write through it.
+rm -f "$BINDIR/niruflow.new"
+install -m 0755 "$BIN_SRC" "$BINDIR/niruflow.new"
+mv -f "$BINDIR/niruflow.new" "$BINDIR/niruflow"
+install -m 0644 assets/niruflow.svg "$ICONDIR/niruflow.svg"
+sed "s|^Exec=niruflow desktop$|Exec=$BINDIR/niruflow desktop|" assets/niruflow.desktop > "$APPDIR/niruflow.desktop"
+chmod 0644 "$APPDIR/niruflow.desktop"
+
+# The 0.x scheduler unit runs the resolved venv path; point it at the binary.
+UNIT="$CONFIG/systemd/user/niruflow.service"
+if [ -f "$UNIT" ] && grep -q '^ExecStart=.*/niruflow/versions/' "$UNIT"; then
+    sed -i "s|^ExecStart=.*|ExecStart=$BINDIR/niruflow run-enabled|" "$UNIT"
+    if need systemctl; then systemctl --user daemon-reload >/dev/null 2>&1 || :; fi
+    say 'Scheduler unit now runs the new binary.'
 fi
-"$STAGING/venv/bin/python" -m pip install --disable-pip-version-check '.[desktop]'
-# Only compile first-party source. PySide6 ships non-Python Jinja templates ending in .py.
-"$STAGING/venv/bin/python" -m compileall -q niruflow
-"$STAGING/venv/bin/python" -c 'from niruflow.core.version import VERSION; assert VERSION == "0.6.1"; from niruflow.desktop.app import launch'
-# Atomic symlink replacement; preserve the legacy venv and all user data.
-ln -sfn "$STAGING" "$BASE/current.next"
-mv -Tf "$BASE/current.next" "$BASE/current"
-ln -sfn "$BASE/current/venv/bin/niruflow" "$HOME/.local/bin/niruflow"
-cp niruflow.svg "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/niruflow.svg"
-cat > "${XDG_DATA_HOME:-$HOME/.local/share}/applications/niruflow.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=NIRUFLOW
-Comment=Local automation and maintenance
-Exec=$HOME/.local/bin/niruflow desktop
-Icon=niruflow
-Terminal=false
-Categories=Utility;System;
-EOF
-printf 'NIRUFLOW %s installed. Run: %s\n' "$VERSION" "$HOME/.local/bin/niruflow"
-printf 'Older installations and user configuration/history have been preserved.\n'
+
+# The Python versions (venvs only; no user data lives there).
+if [ -d "$DATA/niruflow/versions" ] || [ -L "$DATA/niruflow/current" ]; then
+    rm -rf "$DATA/niruflow/versions" "$DATA/niruflow/current" "$DATA/niruflow/current.next"
+    rmdir "$DATA/niruflow" 2>/dev/null || :
+    say 'Removed the old Python installation (rules, history and quarantine kept).'
+fi
+
+if need update-desktop-database; then update-desktop-database "$APPDIR" >/dev/null 2>&1 || :; fi
+if need gtk-update-icon-cache; then gtk-update-icon-cache -q "$DATA/icons/hicolor" >/dev/null 2>&1 || :; fi
+
+say "NIRUFLOW $VERSION installed at $BINDIR/niruflow"
+say 'Configuration, history and quarantine have been preserved.'

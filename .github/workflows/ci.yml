@@ -1,0 +1,23 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install X11 test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xdotool x11-utils imagemagick fonts-dejavu-core fontconfig
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - run: sh tests/xvfb.sh target/release/niruflow
+      - run: sh tests/scripts.sh target/release/niruflow

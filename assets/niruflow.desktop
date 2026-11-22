@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NIRUFLOW
+Comment=Local automation and maintenance
+Exec=niruflow desktop
+Icon=niruflow
+Terminal=false
+Categories=Utility;System;
+StartupWMClass=niruflow
